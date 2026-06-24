@@ -24,20 +24,38 @@ def run_agent(log_path: str, model: str = "qwen2.5:3b") -> str:
                 break
 
     anomaly_lines = "\n".join(
-        f"{line}  →  {desc}" for line, desc in anomalies
+        f"{line[:120]}  →  {desc}" for line, desc in anomalies
     ) if anomalies else "未检测到已知异常特征"
 
-    prompt = f"""你是一个安全日志分析 Agent。请基于以下日志和规则引擎扫描结果生成 Markdown 报告。
+    total_lines = len(log_content.splitlines())
+    total_anomalies = len(anomalies)
 
-日志：
-{log_content[:2000]}
+    type_count = {}
+    for _, desc in anomalies:
+        cat = desc.split("→")[0].strip()
+        type_count[cat] = type_count.get(cat, 0) + 1
 
-扫描结果：
-{anomaly_lines}
+    stats = "\n".join(f"- {k}: {v} 条" for k, v in type_count.items())
 
-输出格式：## 分析概览 / ## 异常详情 / ## 风险评估 / ## 建议措施。中文。"""
+    prompt = f"""你是安全日志分析 Agent。规则引擎已做预筛选：常规运维命令（apt/mkd/reboot/systemctl/vim/git 等）已从异常列表中剔除，你看到的都是需要关注的条目。
 
-    print(f"[调试] prompt长度: {len(prompt)} 字符")
+请生成 Markdown 报告：
+
+日志总量: {total_lines} 行
+待关注异常: {total_anomalies} 条
+类型分布:
+{stats}
+
+明细（前 30 条）：
+{chr(10).join(anomaly_lines.split(chr(10))[:30])}
+
+报告结构：
+## 分析概览（总行数、异常数、分布）
+## 异常详情（按类型分组，标注时间与命令）
+## 风险评估（高/中/低。注意：单个用户高频 sudo 若为安装软件等常规操作，不应定为高风险；关注非交互式提权、远程下载执行、权限滥用等真正异常）
+## 建议措施（针对实际发现的问题，不说空话）
+
+中文，只输出事实。"""
 
     response = client.chat.completions.create(
         model=model,
@@ -45,14 +63,10 @@ def run_agent(log_path: str, model: str = "qwen2.5:3b") -> str:
         temperature=0.1,
     )
 
-    msg = response.choices[0].message
-    print(f"[调试] finish_reason: {response.choices[0].finish_reason}")
-    print(f"[调试] content长度: {len(msg.content or '')}")
-
-    report = msg.content or ""
+    report = response.choices[0].message.content or ""
 
     if not report:
-        return "模型未返回任何内容，请检查 Ollama 是否正常运行。"
+        return "模型无输出"
 
     write_func, _ = TOOL_REGISTRY["write_report"]
     write_func(content=report)

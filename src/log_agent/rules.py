@@ -1,4 +1,3 @@
-"""异常检测规则。每条规则函数输入日志行，返回异常描述或 None。"""
 import re
 
 def detect_bruteforce(line: str) -> str | None:
@@ -14,12 +13,60 @@ def detect_bruteforce(line: str) -> str | None:
     return None
 
 def detect_privilege_escalation(line: str) -> str | None:
-    if re.search(r"sudo:.*COMMAND=", line):
-        cmd = re.search(r"COMMAND=(.+)", line)
-        return f"sudo 提权执行 → {cmd.group(1) if cmd else '未知命令'}"
-    if re.search(r"su:.*session opened", line):
-        return "用户切换 (su) → 会话已打开"
-    return None
+    """检测提权操作，排除正常运维命令"""
+    if not re.search(r"sudo:.*COMMAND=", line):
+        if re.search(r"su:.*session opened", line):
+            return "用户切换 (su) → 会话已打开"
+        return None
+
+    cmd = re.search(r"COMMAND=(.+)", line)
+    if not cmd:
+        return None
+
+    command = cmd.group(1).strip()
+
+    # 白名单：正常的运维操作，不报警
+    WHITELIST = [
+        r"^/usr/bin/apt",
+        r"^/usr/bin/mkdir",
+        r"^/usr/sbin/reboot",
+        r"^/usr/bin/su$",
+        r"^/usr/bin/systemctl",
+        r"^/usr/bin/journalctl",
+        r"^/usr/bin/nano",
+        r"^/usr/bin/vim",
+        r"^/usr/bin/cat",
+        r"^/usr/bin/ls",
+        r"^/usr/bin/cp",
+        r"^/usr/bin/mv",
+        r"^/usr/bin/rm",
+        r"^/usr/bin/chown",
+        r"^/usr/bin/chmod",
+        r"^/usr/bin/pip",
+        r"^/usr/bin/python",
+        r"^/usr/bin/git",
+        r"^/usr/bin/curl",
+        r"^/usr/bin/wget",
+    ]
+
+    for pat in WHITELIST:
+        if re.match(pat, command):
+            return None  # 正常运维，不放行到异常列表
+
+    # 危险提权特征
+    DANGER = [
+        (r"chmod\s+777", "chmod 777 权限滥用"),
+        (r"(wget|curl)\s+\S+\s*\|?\s*(sh|bash)", "远程脚本下载并执行"),
+        (r"useradd|adduser", "新增用户"),
+        (r"passwd", "修改密码"),
+        (r"(iptables|ufw)\s+.*disable", "关闭防火墙"),
+    ]
+
+    for pat, desc in DANGER:
+        if re.search(pat, command):
+            return f"可疑提权行为 → {desc} ({command[:60]})"
+
+    return f"sudo 提权执行 → {command[:60]}"  # 灰名单，不确定
 
 def detect_web_attack(line: str) -> str | None:
     patterns = {
